@@ -1,1 +1,7 @@
+# requirements.txt
+# AetherNav-ML-Mega-Project dependencies
 
+torch
+torchvision
+torchaudio
+numpy>=1.24.0

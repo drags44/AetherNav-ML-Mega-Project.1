@@ -1,18 +1,23 @@
 # data/generator.py
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
+
 from typing import List, Dict, Tuple
-from config import MAX_STEPS, FUEL_START
+from config import MAX_STEPS, FUEL_START, WORLD_SIZE, DT
+
 
 class DataGenerator:
     """
-    Generates synthetic spaceship navigation episodes for RL training.
-    Creates 10k episodes of spaceship trajectories through obstacle fields.
+    Generates synthetic training data for the spaceship RL agent to train itself on. 
+    It's almost like the ship is seeing the life of another ship and learning from it. 
     """
     
     def __init__(self):
         """Initialize with world parameters."""
-        self.world_size = 100.0  # 100x100 grid boundaries
-        self.dt = 0.1            # Timestep for physics
+        self.world_size = WORLD_SIZE  # 100x100 grid boundaries
+        self.dt = DT        # Timestep for physics
     
     def spawn_obstacles(self, n_planets=3, n_debris=10, n_blackholes=1) -> List[Dict]:
         """
@@ -54,7 +59,7 @@ class DataGenerator:
     def compute_state_vector(self, ship_pos: np.ndarray, ship_vel: np.ndarray, 
                            fuel: float, obstacles: List[Dict]) -> np.ndarray:
         """
-        Compute 7-element state vector from current situation.
+        Compute 8-element state vector from current situation.
         
         Args:
             ship_pos: [x, y]
@@ -63,22 +68,28 @@ class DataGenerator:
             obstacles: List from spawn_obstacles()
             
         Returns:
-            np.array([ship_x, ship_y, vel_x, vel_y, fuel, nearest_dist, obj_angle])
+            np.array([ship_x, ship_y, vel_x, vel_y, fuel, min_dist, obj_angle, terminal]
         """
+        
         ship_x, ship_y = ship_pos
+    
         vel_x, vel_y = ship_vel
         
+        
         # Find nearest obstacle
-        min_dist = float('inf')
+        nearest_dist = float('inf')
+        # Angle from ship to nearest obstacle
         obj_angle = 0.0
         
         for obs in obstacles:
+            # Compute spatial displacement
             dx = obs["pos"][0] - ship_x
             dy = obs["pos"][1] - ship_y
+            # Use Euclidean distance to compute distance
             dist = np.sqrt(dx**2 + dy**2)
             
-            if dist < min_dist:
-                min_dist = dist
+            if dist < nearest_dist:
+                nearest_dist = dist
                 obj_angle = np.arctan2(dy, dx)
         
         # Boundary check (wrap around edges)
@@ -87,8 +98,12 @@ class DataGenerator:
         if ship_y < 0: ship_y = self.world_size  
         if ship_y > self.world_size: ship_y = 0
         
-        return np.array([ship_pos[0], ship_pos[1], ship_vel[0], ship_vel[1], 
-                        fuel, min_dist, obj_angle], dtype=np.float32)
+        
+        terminal = 1.0 if nearest_dist < 1.0 or fuel <= 0 else 0.0
+        return np.array([ship_x, ship_y, vel_x, vel_y, 
+                fuel, nearest_dist, obj_angle, terminal], dtype=np.float32)
+
+
     
     def generate_single_episode(self, max_steps: int = 100) -> np.ndarray:
         """
@@ -109,27 +124,34 @@ class DataGenerator:
             # Random action (thrust 0-1, angle -pi to pi)
             thrust = np.random.uniform(0, 0.5)
             angle = np.random.uniform(-np.pi, np.pi)
+            # X and Y thrust components: 
             action = np.array([thrust * np.cos(angle), thrust * np.sin(angle)])
             
             # Simple physics (no env.step() - pure random policy)
             ship_vel += action * self.dt
             ship_pos += ship_vel * self.dt
+            # Wrap around world edges
+            ship_pos[0] = ship_pos[0] % self.world_size
+            ship_pos[1] = ship_pos[1] % self.world_size
+
             fuel -= np.linalg.norm(action) * 0.1
             
             # Check termination (same logic as env)
             nearest_dist = min([np.linalg.norm(ship_pos - np.array(obs["pos"])) 
                               for obs in obstacles])
             
-            if nearest_dist < 1.0 or fuel <= 0:
+            # Compute terminal before state recording
+            terminal = 1.0 if nearest_dist < 1.0 or fuel <= 0 else 0.0
+            if terminal == 1.0:
                 break
-            
-            # Record state
+
+            # Record state 
             state = self.compute_state_vector(ship_pos, ship_vel, fuel, obstacles)
             episode.append(state)
         
         # Pad to max_steps if short
         while len(episode) < max_steps:
-            episode.append(np.zeros(7))
+            episode.append(np.zeros(8))
         
         return np.array(episode, dtype=np.float32)
     
@@ -138,7 +160,7 @@ class DataGenerator:
         MAIN FUNCTION - Generate full training dataset.
         
         Returns:
-            np.array(shape=[n_episodes, max_steps, 7])
+            np.array(shape=[n_episodes, max_steps, 8])
         """
         print(f"Generating {n_episodes} synthetic episodes...")
         episodes = []
@@ -154,3 +176,7 @@ class DataGenerator:
         print(f"Generated shape: {episodes_array.shape}")
         return episodes_array
 
+if __name__ == "__main__":
+    gen = DataGenerator()
+    episodes = gen.generate_episodes(n_episodes=10)  # Small test
+    print(f"Generated shape: {episodes.shape}")
